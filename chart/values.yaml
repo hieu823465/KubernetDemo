@@ -55,3 +55,13 @@ tolerations: []
 
 # Affinity rules (optional)
 affinity: {}
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: nginx
+  host: ""  # Leave empty for IP-based access, or set to "fastapi-demo.local"
+  path: /
+  pathType: Prefix
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
