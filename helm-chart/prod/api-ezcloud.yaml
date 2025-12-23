@@ -1,0 +1,72 @@
+global:
+  replicaCount: 1
+  environment: {}
+  enableCronjob: false
+  enableDeployment: true
+
+imagePullSecrets: acr-secret
+image:
+  repository: neurondacrllte1q.azurecr.io/ezcloudproduction/ai_service
+  tag: microservice-api-ezcloud-2ea330
+  pullPolicy: Always
+
+proxyImage:
+  enabled: false
+
+replicaCount: 1
+
+services:
+  - name: api-ezcloud
+    type: NodePort
+    annotations: {}
+    specs:
+      - port: 80
+        targetPort: 8080
+        name: http
+
+environment: {}
+
+liveness:
+  enabled: false
+  path: /
+  port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 30
+readiness:
+  enabled: false
+  path: /
+  port: 8080
+  initialDelaySeconds: 50
+  periodSeconds: 50
+  failureThreshold: 30
+
+volumes:
+  enabled: false
+  pvc:
+    enabled: false
+    existing_claim:
+    name: pvc
+    mountPath: /pv
+    size: 1G
+    class:
+    accessModes:
+      - ReadWriteOnce
+
+  configMaps: {}
+
+ingress:
+  enabled: true
+  annotations:
+    nginx.org/client-max-body-size: "999M"
+    nginx.ingress.kubernetes.io/proxy-body-size: "999M"
+  hosts:
+    - host: apiv3.neurond.dpdns.org
+      servicePort: 80
+      serviceName: api-ezcloud
+      path: /
+  tls:
+    - hosts:
+        - apiv3.neurond.dpdns.org
+      secretName: neurond-dpdns-org-ssl-secret
+
+resources: {}

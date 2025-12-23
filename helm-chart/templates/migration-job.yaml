@@ -1,0 +1,201 @@
+{{- if .Values.migration.enabled -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-migration-{{ .Values.image.tag | replace ":" "-" | replace "." "-" | trunc 63 }}
+  labels:
+    app.kubernetes.io/name: {{ include "service.name" . }}
+    helm.sh/chart: {{ include "service.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/component: migration
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-1"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit | default 4 }}
+  activeDeadlineSeconds: {{ .Values.migration.jobTimeout | default 600 }}
+  ttlSecondsAfterFinished: {{ .Values.migration.ttlSecondsAfterFinished | default 86400 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "service.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: migration
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      restartPolicy: Never
+      {{- if or .Values.imagePullSecrets .Values.imageCredentials }}
+      imagePullSecrets:
+      {{- end }}
+      {{- if .Values.imagePullSecrets }}
+      - name: {{ .Values.imagePullSecrets }}
+      {{- end }}
+      {{- if .Values.imageCredentials }}
+      - name: {{ .Release.Name }}-docker-credentials
+      {{- end }}
+      {{- if .Values.migration.serviceAccount }}
+      serviceAccountName: {{ .Values.migration.serviceAccount }}
+      {{- else if .Values.serviceAccount }}
+      serviceAccountName: {{ .Values.serviceAccount }}
+      {{- end }}
+      initContainers:
+      # Install kubectl for ConfigMap creation
+      - name: install-kubectl
+        image: alpine:3.19
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - |
+          set -e
+          echo "Installing kubectl..."
+          apk add --no-cache curl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          mv kubectl /shared/kubectl
+          echo "✅ kubectl installed successfully"
+        volumeMounts:
+        - name: shared-tools
+          mountPath: /shared
+        resources:
+          limits:
+            cpu: 100m
+            memory: 64Mi
+          requests:
+            cpu: 50m
+            memory: 32Mi
+      containers:
+      - name: migration
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command:
+        - /bin/bash
+        - -c
+        - |
+          # Use the standalone k8s-migrate.sh script
+          # This script handles tool installation, backup, and migration
+          # without relying on pnpm commands
+
+          # Set backup name with deployment context
+          # Use namespace as deployment environment (staging/production)
+          export DEPLOYMENT_ENV="{{ .Release.Namespace }}"
+          export BACKUP_NAME="{{ .Release.Namespace }}-{{ .Values.image.tag | replace ":" "-" | replace "." "-" | trunc 63 }}-$(date +%Y%m%d-%H%M%S)"
+          export MIGRATION_MODE="kubernetes-job"
+
+          # Enable or disable backup based on configuration
+          export ENABLE_BACKUP="{{ .Values.migration.enableBackup | default "false" }}"
+
+          # Run the migration script
+          if [ -f "/app/scripts/k8s-migrate.sh" ]; then
+            /app/scripts/k8s-migrate.sh
+          else
+            echo "❌ Migration script not found at /app/scripts/k8s-migrate.sh"
+            echo "   Ensure the Docker image includes migration files"
+            exit 1
+          fi
+
+          # If migration succeeded, create a ConfigMap marker for pod restarts
+          MIGRATION_EXIT_CODE=$?
+          if [ $MIGRATION_EXIT_CODE -eq 0 ]; then
+            echo ""
+            echo "=== Creating Migration Status Marker ==="
+
+            # Make kubectl available
+            export PATH="/shared:$PATH"
+
+            # Create ConfigMap with migration metadata
+            CONFIGMAP_NAME="{{ .Release.Name }}-migration-status"
+            NAMESPACE="{{ .Release.Namespace }}"
+            TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+            echo "Creating ConfigMap: $CONFIGMAP_NAME"
+
+            # Create/update ConfigMap with error checking
+            if ! /shared/kubectl create configmap "$CONFIGMAP_NAME" \
+              --namespace="$NAMESPACE" \
+              --from-literal=status="completed" \
+              --from-literal=timestamp="$TIMESTAMP" \
+              --from-literal=image-tag="{{ .Values.image.tag }}" \
+              --from-literal=deployment-env="{{ .Release.Namespace }}" \
+              --from-literal=backup-enabled="{{ .Values.migration.enableBackup | default "false" }}" \
+              --from-literal=backup-name="${BACKUP_NAME:-N/A}" \
+              --dry-run=client -o yaml | \
+              /shared/kubectl apply -f -; then
+              echo "❌ Failed to create/update ConfigMap"
+              echo "   This may be due to missing RBAC permissions"
+              echo "   Ensure ServiceAccount has permissions to create/update ConfigMaps"
+              exit 1
+            fi
+
+            # Label the ConfigMap for easy cleanup and querying (with error checking)
+            if ! /shared/kubectl label configmap "$CONFIGMAP_NAME" \
+              --namespace="$NAMESPACE" \
+              app.kubernetes.io/name={{ include "service.name" . }} \
+              app.kubernetes.io/instance={{ .Release.Name }} \
+              app.kubernetes.io/component=migration \
+              app.kubernetes.io/managed-by={{ .Release.Service }} \
+              --overwrite; then
+              echo "⚠️  Warning: Failed to label ConfigMap (non-fatal)"
+              echo "   ConfigMap was created but labels may be missing"
+            fi
+
+            echo "✅ Migration status marker created successfully"
+            echo "   Pods can now restart without waiting for migration job"
+            exit 0
+          else
+            echo "❌ Migration failed - not creating status marker"
+            exit $MIGRATION_EXIT_CODE
+          fi
+        volumeMounts:
+        - name: shared-tools
+          mountPath: /shared
+        env:
+        {{- if .Values.migration.environment }}
+        {{- range $name, $value := .Values.migration.environment }}
+        - name: {{ $name | quote }}
+          value: {{ $value | quote }}
+        {{- end }}
+        {{- end }}
+        {{- if .Values.environment }}
+        {{- range $name, $value := .Values.environment }}
+        - name: {{ $name | quote }}
+          value: {{ $value | quote }}
+        {{- end }}
+        {{- end }}
+        # Migration-specific environment variables
+        - name: NODE_ENV
+          value: "production"
+        - name: MIGRATION_MODE
+          value: "kubernetes-job"
+        resources:
+          {{- if .Values.migration.resources }}
+          {{- toYaml .Values.migration.resources | nindent 10 }}
+          {{- else }}
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          {{- end }}
+        securityContext:
+          # Migration job needs elevated permissions to install required tools (pg_dump, az, jq)
+          # This is acceptable for a pre-install/pre-upgrade job that runs once
+          runAsNonRoot: false
+          runAsUser: 0
+          allowPrivilegeEscalation: true
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - CHOWN
+            - SETUID
+            - SETGID
+      volumes:
+      - name: shared-tools
+        emptyDir: {}
+{{- end }}

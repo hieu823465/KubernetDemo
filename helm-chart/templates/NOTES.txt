@@ -1,0 +1,8 @@
+service deployed.
+Proxy command for reaching the services:
+{{- $root:= . -}}
+{{- range $service:= .Values.services -}}
+    {{- range $spec:= .specs }}
+        kubectl port-forward svc/{{ $service.name }}-svc  {{ $spec.containerPort | default $spec.port }}:{{ $spec.port }}
+    {{- end }}
+{{- end }}

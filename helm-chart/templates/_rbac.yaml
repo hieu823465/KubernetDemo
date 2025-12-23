@@ -1,0 +1,103 @@
+{{- define "rbac" -}}
+#RBAC and service account
+{{- $sa := .Values.serviceAccount | default "default" }}
+{{- if .Values.createServiceAccount }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    # Keep RBAC resources during Helm rollback to prevent permission issues
+    helm.sh/resource-policy: keep
+    {{- if .Values.migration.enabled }}
+    # Run as hook before migration job (weight -5 runs before migration's -1)
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    {{- end }}
+---
+{{- end }}
+{{- if .Values.rbac }}
+# ClusterRole for RBAC permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-cr-{{ .Release.Namespace }}
+  annotations:
+    # Keep RBAC resources during Helm rollback to prevent permission issues
+    helm.sh/resource-policy: keep
+    {{- if .Values.migration.enabled }}
+    # Run as hook before migration job (weight -5 runs before migration's -1)
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    {{- end }}
+rules:
+  - apiGroups:
+      - "apps"
+    resources:
+      - deployments
+      - statefulsets
+    verbs:
+      - get
+      - list
+  # Permissions for init container to check migration job status
+  - apiGroups:
+      - "batch"
+    resources:
+      - jobs
+    verbs:
+      - get
+      - list
+      - watch
+  # Permissions for init container to read migration pod logs
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - pods/log
+    verbs:
+      - get
+      - list
+  # Permissions for ConfigMap-based migration tracking
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get
+      - list
+      - create
+      - update
+      - patch
+  # Permissions to read events for debugging
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - get
+      - list
+---
+# ClusterRoleBinding to link ClusterRole to ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-crb-{{ .Release.Namespace }}
+  annotations:
+    # Keep RBAC resources during Helm rollback to prevent permission issues
+    helm.sh/resource-policy: keep
+    {{- if .Values.migration.enabled }}
+    # Run as hook before migration job (weight -5 runs before migration's -1)
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    {{- end }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ .Release.Name }}-cr-{{ .Release.Namespace }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+{{- end -}}

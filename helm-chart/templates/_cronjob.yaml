@@ -1,0 +1,23 @@
+{{- define "cronjob" -}}
+{{- $root:= . }}
+{{- if .Values.global.enableCronjob -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $root.Release.Name }}-cronjob
+spec:
+  schedule: "{{ .Values.schedule }}"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: main-cronjob
+            image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+            command: {{ .Values.command }}
+            {{- if .Values.workingDir }}
+            workingDir: {{ .Values.workingDir }}
+            {{- end }}
+          restartPolicy: OnFailure
+{{- end -}}
+{{- end -}}

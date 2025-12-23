@@ -1,0 +1,73 @@
+global:
+  replicaCount: 1
+  environment: {}
+  enableCronjob: false
+  enableDeployment: true
+
+imagePullSecrets: acr-secret
+image:
+  repository: atlasacrfzx5q9.azurecr.io/atlassystemtest/ai_service
+  tag: microservice-frontend-2ea330
+  pullPolicy: Always
+
+proxyImage:
+  enabled: false
+
+replicaCount: 1
+
+services:
+  - name: frontend-atlas
+    type: NodePort
+    annotations: {}
+    specs:
+      - port: 80
+        targetPort: 3000
+        name: http
+
+environment: {}
+
+liveness:
+  enabled: true
+  path: /api/health/ping
+  port: 3000
+  initialDelaySeconds: 60
+  periodSeconds: 15
+  failureThreshold: 3
+readiness:
+  enabled: false
+  path: /
+  port: 3000
+  initialDelaySeconds: 50
+  periodSeconds: 50
+  failureThreshold: 30
+
+volumes:
+  enabled: false
+  pvc:
+    enabled: false
+    existing_claim:
+    name: pvc
+    mountPath: /pv
+    size: 1G
+    class:
+    accessModes:
+      - ReadWriteOnce
+
+  configMaps: {}
+
+ingress:
+  enabled: true
+  annotations:
+    nginx.org/client-max-body-size: "999M"
+    nginx.ingress.kubernetes.io/proxy-body-size: "999M"
+  hosts:
+    - host: ai.atlasindustries.com
+      servicePort: 80
+      serviceName: frontend-atlas
+      path: /
+  tls:
+    - hosts:
+        - ai.atlasindustries.com
+      secretName: network-solution-root-ca-ssl
+
+resources: {}

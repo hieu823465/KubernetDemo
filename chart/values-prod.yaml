@@ -1,0 +1,16 @@
+# Production environment overrides
+replicaCount: 5
+
+environment: production
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "200m"
+  limits:
+    memory: "256Mi"
+    cpu: "500m"
+
+# Disable NodePort in production (use Ingress/LoadBalancer instead)
+nodePort:
+  enabled: false

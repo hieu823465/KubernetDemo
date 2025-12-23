@@ -1,0 +1,138 @@
+global:
+  replicaCount: 1
+  environment: {}
+  enableCronjob: false
+  enableDeployment: true
+
+imagePullSecrets: acr-secret
+image:
+  repository: neurondacrhk07z6.azurecr.io/neurondproduction/ai_service
+  tag: microservice-frontend-2ea330
+  pullPolicy: Always
+
+proxyImage:
+  enabled: false
+
+replicaCount: 1
+
+# Rolling update configuration
+rollingUpdate:
+  maxSurge: 1          # Allow 1 extra pod during update
+  maxUnavailable: 0    # Keep all pods available during update
+progressDeadlineSeconds: 600  # Timeout after 10 minutes if not progressing (longer for production)
+revisionHistoryLimit: 5        # Keep 5 old ReplicaSets for rollback (more for production)
+
+services:
+  - name: frontend-production
+    type: NodePort
+    annotations: {}
+    specs:
+      - port: 80
+        targetPort: 3000
+        name: http
+
+environment: {}
+
+liveness:
+  enabled: true
+  path: /api/health/ping
+  port: 3000
+  initialDelaySeconds: 60  # Initial delay before first check (production buffer)
+  periodSeconds: 10        # Check interval
+  failureThreshold: 5      # Failures before restart (more tolerance for production)
+  timeoutSeconds: 5        # Timeout for health check
+readiness:
+  enabled: true            # Enable readiness checks
+  path: /api/health/ping   # Health check endpoint
+  port: 3000
+  initialDelaySeconds: 30  # Initial delay before first check
+  periodSeconds: 5         # Check interval
+  successThreshold: 2      # Successes to mark ready (more strict for production)
+  failureThreshold: 3      # Failures to mark unready
+
+volumes:
+  enabled: false
+  pvc:
+    enabled: false
+    existing_claim:
+    name: pvc
+    mountPath: /pv
+    size: 1G
+    class:
+    accessModes:
+      - ReadWriteOnce
+
+  configMaps: {}
+
+ingress:
+  enabled: true
+  annotations:
+    nginx.org/client-max-body-size: "999M"
+    nginx.ingress.kubernetes.io/proxy-body-size: "999M"
+  hosts:
+    - host: assistant.neurond.com
+      servicePort: 80
+      serviceName: frontend-production
+      path: /
+    - host: chat.neurond.com
+      servicePort: 80
+      serviceName: frontend-production
+      path: /
+    # - host: holie.ai
+    #   servicePort: 80
+    #   serviceName: frontend
+    #   path: /
+  tls:
+    - hosts:
+        - assistant.neurond.com
+      secretName: cloudfare-root-ca-ssl
+    - hosts:
+        - chat.neurond.com
+      secretName: cloudfare-root-ca-ssl
+    # - hosts:
+    #     - holie.ai
+    #   secretName: holie-cloudfare-root-ca-ssl
+
+resources: {}
+
+# RBAC configuration for init container permissions
+# Required for wait-for-migration init container to check job status and logs
+rbac: true
+createServiceAccount: true
+serviceAccount: frontend-production-sa
+
+migration:
+  enabled: true
+  jobTimeout: 300  # Job timeout in seconds (5 minutes for production)
+  backoffLimit: 3  # Number of retries on failure (balanced for production)
+  ttlSecondsAfterFinished: 300  # Cleanup completed jobs after 5 minutes
+  initContainerTimeout: 60  # Init container check timeout (1 minute)
+  # Enable/disable database backup before migration
+  # Set to "true" to enable backup (requires Azure credentials and pg_dump)
+  # PRODUCTION RECOMMENDATION: Set to "true" for safety
+  # Set to "false" to skip backup and run migration only (not recommended for production)
+  enableBackup: true
+  # Migration environment variables
+  # These should be set via --set flags during helm upgrade for security
+  # Required for database migration:
+  #   - POSTGRES_URL: PostgreSQL connection string (REQUIRED)
+  # Optional for database backup (only if enableBackup=true):
+  #   - AZURE_STORAGE_ACCOUNT: Azure Storage Account name for backups
+  #   - AZURE_STORAGE_ACCOUNT_KEY: Azure Storage Account key
+  # Note: Container "database-backups" is hardcoded in backup scripts
+  # Backups are stored in: database-backups/production/backup-TIMESTAMP.sql.gz
+  # Example helm command:
+  #   helm upgrade --install frontend-production . \
+  #     --set migration.environment.POSTGRES_URL="postgresql://..." \
+  #     --set migration.enableBackup=true \
+  #     --set migration.environment.AZURE_STORAGE_ACCOUNT="..." \
+  #     --set migration.environment.AZURE_STORAGE_ACCOUNT_KEY="..." \
+  #     --namespace production
+  environment: {}
+  resources:
+    limits:
+      cpu: 1000m  # CPU limit for migration job
+      memory: 1Gi  # Memory limit for migration job
+    requests:
+      cpu: 500m  # CPU request for migration job
+      memory: 512Mi  # Memory request for migration job

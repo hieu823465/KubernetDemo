@@ -1,0 +1,314 @@
+{{- define "deployment" -}}
+{{- $root:= . }}
+{{- if .Values.global.enableDeployment -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $root.Release.Name }}-deployment
+  {{- if .Values.annotations }}
+  annotations:
+  {{- range $key, $value := .Values.annotations }}
+    {{ $key }}: {{ $value }}
+  {{- end }}
+  {{- end }}
+  labels:
+    app.kubernetes.io/name: {{ include "service.name" . }}
+    helm.sh/chart: {{ include "service.chart" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.replicaCount | default .Values.global.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.rollingUpdate.maxSurge | default 1 }}
+      maxUnavailable: {{ .Values.rollingUpdate.maxUnavailable | default 0 }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit | default 3 }}
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds | default 300 }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "service.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "service.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      {{- if or .Values.imagePullSecrets .Values.imageCredentials }}
+      imagePullSecrets:
+      {{- end }}
+      {{- if .Values.imagePullSecrets }}
+      - name: {{ .Values.imagePullSecrets }}
+      {{- end }}
+      {{- if .Values.imageCredentials }}
+      - name: {{ $root.Release.Name }}-docker-credentials
+      {{- end }}
+      {{- if .Values.serviceAccount }}
+      serviceAccountName: {{ .Values.serviceAccount }}
+      {{- end }}
+      {{- if .Values.hostAliases }}
+      hostAliases:
+      {{- range .Values.hostAliases }}
+      - ip: {{ .ip }}
+        hostnames:
+        {{- range .hostnames }}
+        - {{ . }}
+        {{- end }}
+      {{- end }}
+      {{- end }}
+      {{- if .Values.migration.enabled }}
+      initContainers:
+      - name: wait-for-migration
+        image: bitnami/kubectl:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "========================================="
+          echo "Migration Readiness Check"
+          echo "========================================="
+          echo ""
+
+          CONFIGMAP_NAME="{{ $root.Release.Name }}-migration-status"
+          NAMESPACE="{{ .Release.Namespace }}"
+          CURRENT_IMAGE_TAG="{{ .Values.image.tag }}"
+          TOTAL_TIMEOUT={{ .Values.migration.initContainerTimeout | default 30 }}
+          CHECK_INTERVAL=2
+          START_TIME=$(date +%s)
+
+          echo "Configuration:"
+          echo "  ConfigMap: $CONFIGMAP_NAME"
+          echo "  Namespace: $NAMESPACE"
+          echo "  Current Image Tag: $CURRENT_IMAGE_TAG"
+          echo "  Timeout: ${TOTAL_TIMEOUT}s"
+          echo ""
+
+          # Phase 1: Check if migration already completed (ConfigMap exists)
+          echo "Phase 1: Checking for completed migration..."
+          if kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+            # ConfigMap exists - check if it matches current deployment
+            STATUS=$(kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath='{.data.status}' 2>/dev/null || echo "unknown")
+            TIMESTAMP=$(kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath='{.data.timestamp}' 2>/dev/null || echo "unknown")
+            CONFIGMAP_IMAGE_TAG=$(kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath='{.data.image-tag}' 2>/dev/null || echo "unknown")
+
+            echo "Found existing migration ConfigMap:"
+            echo "  Status: $STATUS"
+            echo "  Timestamp: $TIMESTAMP"
+            echo "  ConfigMap Image Tag: $CONFIGMAP_IMAGE_TAG"
+            echo "  Current Image Tag: $CURRENT_IMAGE_TAG"
+            echo ""
+
+            # CRITICAL: Validate image tag matches
+            if [ "$STATUS" = "completed" ] && [ "$CONFIGMAP_IMAGE_TAG" = "$CURRENT_IMAGE_TAG" ]; then
+              echo "✅ Migration already completed for this image"
+              echo ""
+              echo "Image Tag Validation:"
+              echo "  ✅ ConfigMap Image Tag: $CONFIGMAP_IMAGE_TAG"
+              echo "  ✅ Current Image Tag:   $CURRENT_IMAGE_TAG"
+              echo "  ✅ Tags Match: YES"
+              echo ""
+              echo "This is a pod restart with same image - no migration needed"
+              echo "Proceeding to start application..."
+              exit 0
+            elif [ "$STATUS" = "completed" ] && [ "$CONFIGMAP_IMAGE_TAG" != "$CURRENT_IMAGE_TAG" ]; then
+              echo "⚠️  Migration completed but for DIFFERENT image"
+              echo ""
+              echo "Image Tag Mismatch:"
+              echo "  ❌ ConfigMap Image Tag: $CONFIGMAP_IMAGE_TAG"
+              echo "  ❌ Current Image Tag:   $CURRENT_IMAGE_TAG"
+              echo "  ❌ Tags Match: NO"
+              echo ""
+              echo "This is a NEW deployment with different image"
+              echo "Waiting for new migration job to run for image: $CURRENT_IMAGE_TAG"
+            elif [ "$STATUS" != "completed" ]; then
+              echo "⚠️  ConfigMap exists but status is: $STATUS"
+              echo "   Waiting for migration to complete..."
+            fi
+          else
+            echo "🔍 No migration status ConfigMap found"
+            echo "   This is a fresh deployment - waiting for migration to run..."
+          fi
+
+          echo ""
+
+          # Phase 2: Wait for migration to complete (ConfigMap creation)
+          echo "Phase 2: Waiting for migration to complete..."
+          echo "Checking every ${CHECK_INTERVAL}s for ConfigMap creation..."
+          echo ""
+
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+
+            # Check timeout
+            if [ $ELAPSED -ge $TOTAL_TIMEOUT ]; then
+              echo "❌ ERROR: Migration did not complete within ${TOTAL_TIMEOUT}s"
+              echo ""
+              echo "Debugging Information:"
+              echo ""
+              echo "1. Migration Jobs:"
+              kubectl get jobs -n "$NAMESPACE" -l "app.kubernetes.io/component=migration" -o wide 2>/dev/null || echo "   No migration jobs found"
+              echo ""
+              echo "2. Migration Pods:"
+              kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/component=migration" -o wide 2>/dev/null || echo "   No migration pods found"
+              echo ""
+              echo "3. Recent Events:"
+              kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>/dev/null | grep -i migration | tail -10 || echo "   No migration events found"
+              echo ""
+              echo "4. Migration Pod Logs (if available):"
+              kubectl logs -n "$NAMESPACE" -l "app.kubernetes.io/component=migration" --tail=50 2>/dev/null || echo "   No logs available"
+              echo ""
+              echo "Troubleshooting:"
+              echo "  - Check if migration job was created by Helm hook"
+              echo "  - Verify POSTGRES_URL and other env vars are set correctly"
+              echo "  - Check migration job logs for errors"
+              exit 1
+            fi
+
+            # Check for ConfigMap
+            if kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" >/dev/null 2>&1; then
+              STATUS=$(kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath='{.data.status}' 2>/dev/null || echo "unknown")
+              CONFIGMAP_IMAGE_TAG=$(kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath='{.data.image-tag}' 2>/dev/null || echo "unknown")
+
+              # CRITICAL: Check both status AND image tag match
+              if [ "$STATUS" = "completed" ] && [ "$CONFIGMAP_IMAGE_TAG" = "$CURRENT_IMAGE_TAG" ]; then
+                TIMESTAMP=$(kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath='{.data.timestamp}' 2>/dev/null || echo "unknown")
+                BACKUP_ENABLED=$(kubectl get configmap "$CONFIGMAP_NAME" -n "$NAMESPACE" -o jsonpath='{.data.backup-enabled}' 2>/dev/null || echo "unknown")
+
+                echo ""
+                echo "✅ Migration completed successfully for current image!"
+                echo ""
+                echo "Migration Details:"
+                echo "  Status: $STATUS"
+                echo "  Timestamp: $TIMESTAMP"
+                echo "  ConfigMap Image Tag: $CONFIGMAP_IMAGE_TAG"
+                echo "  Current Image Tag: $CURRENT_IMAGE_TAG"
+                echo "  Image Tags Match: YES ✅"
+                echo "  Backup Enabled: $BACKUP_ENABLED"
+                echo "  Duration: ${ELAPSED}s"
+                echo ""
+                echo "Proceeding to start application..."
+                exit 0
+              elif [ "$STATUS" = "completed" ] && [ "$CONFIGMAP_IMAGE_TAG" != "$CURRENT_IMAGE_TAG" ]; then
+                echo "⚠️  ConfigMap found with status=completed but WRONG image tag"
+                echo "   ConfigMap Image Tag: $CONFIGMAP_IMAGE_TAG"
+                echo "   Current Image Tag: $CURRENT_IMAGE_TAG"
+                echo "   Waiting for migration with correct image tag..."
+              elif [ "$STATUS" != "completed" ]; then
+                echo "⚠️  ConfigMap found but status is: $STATUS (expected: completed)"
+                echo "   Continuing to wait..."
+              fi
+            fi
+
+            # Show progress
+            echo "[${ELAPSED}s / ${TOTAL_TIMEOUT}s] Waiting for migration... (checking every ${CHECK_INTERVAL}s)"
+
+            sleep $CHECK_INTERVAL
+          done
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+      {{- end }}
+      containers:
+        - name: {{ $root.Release.Name }}-app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.command }}
+          command: {{ .Values.command }}
+          {{- end }}
+          {{- if .Values.workingDir }}
+          workingDir: {{ .Values.workingDir }}
+          {{- end }}
+          {{- if .Values.args }}
+          args: {{ .Values.args }}
+          {{- end }}
+          ports:
+            {{- range .Values.services -}}
+            {{- range $port:= .specs}}
+            - name: {{ .name }}
+              containerPort: {{ .targetPort | default .port}}
+              protocol: {{ .protocol | default "TCP" }}
+            {{- end }}
+            {{- end }}
+          {{- if .Values.environment }}
+          env:
+          {{- range $name, $value := .Values.environment}}
+          - name: {{ $name | quote}}
+            value: {{ $value | quote }}
+          {{- end }}
+          {{- end }}
+          {{- if .Values.volumes.enabled }}
+          volumeMounts:
+            {{- range $conf := .Values.volumes.configMaps }}
+            - mountPath: {{ $conf.mountPath }}
+              name: {{ $conf.name }}-volume
+            {{- end }}
+            {{- if .Values.volumes.pvc.enabled }}
+            - mountPath: {{ .Values.volumes.pvc.mountPath }}
+              name: {{ .Values.volumes.pvc.existing_claim | default .Values.volumes.pvc.name }}-volume
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.liveness.path }}
+              port: {{ .Values.liveness.port }}
+            initialDelaySeconds: {{ .Values.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.liveness.failureThreshold | default 3 }}
+            timeoutSeconds: {{ .Values.liveness.timeoutSeconds | default 1 }}
+      {{- end}}
+      {{- if .Values.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.readiness.path }}
+              port: {{ .Values.readiness.port }}
+            initialDelaySeconds: {{ .Values.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readiness.periodSeconds }}
+            successThreshold: {{ .Values.readiness.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.readiness.failureThreshold }}
+            timeoutSeconds: {{ .Values.readiness.timeoutSeconds | default 1 }}
+      {{- end }}
+        {{- if .Values.proxyImage.enabled }}
+        - name: {{ $root.Release.Name }}-proxy
+          image: "{{ .Values.proxyImage.repository }}:{{ .Values.proxyImage.tag }}"
+          imagePullPolicy: {{ .Values.proxyImage.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+        {{- end }}
+      {{- if .Values.volumes.enabled }}
+      volumes:
+        {{- range $conf := .Values.volumes.configMaps }}
+        - name: {{ $conf.name }}-volume
+          configMap:
+            name: {{ $conf.name }}
+        {{- end }}
+        {{- if .Values.volumes.pvc.enabled}}
+        - name: {{ .Values.volumes.pvc.existing_claim | default .Values.volumes.pvc.name }}-volume
+          persistentVolumeClaim:
+            claimName: {{ .Values.volumes.pvc.existing_claim | default .Values.volumes.pvc.name }}
+        {{- end}}
+      {{- end }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - store
+            topologyKey: "kubernetes.io/hostname"
+{{- end -}}
+{{- end -}}

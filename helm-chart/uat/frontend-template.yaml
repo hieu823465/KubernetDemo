@@ -1,0 +1,207 @@
+global:
+  replicaCount: 1
+  environment: {}
+  enableCronjob: false
+  enableDeployment: true
+
+imagePullSecrets: acr-secret
+image:
+  repository: acr-repository_placeholder
+  tag: frontend-image-xxxxxx
+  pullPolicy: Always
+
+proxyImage:
+  enabled: false
+
+replicaCount: 1
+
+# Rolling update configuration
+rollingUpdate:
+  maxSurge: 1          # Allow 1 extra pod during update
+  maxUnavailable: 0    # Keep all pods available during update
+progressDeadlineSeconds: 300  # Timeout after 5 minutes if not progressing
+revisionHistoryLimit: 3        # Keep 3 old ReplicaSets for rollback
+
+services:
+  - name: service_name_placeholder
+    type: NodePort
+    annotations: {}
+    specs:
+      - port: 80
+        targetPort: 3000
+        name: http
+
+environment:
+  # ==============================================================================
+  # Runtime Environment Variables
+  # ==============================================================================
+  # These variables are injected into the container at runtime via Kubernetes.
+  # Pass actual values using: helm upgrade --set environment.VARIABLE_NAME="value"
+  # Or override in environment-specific values files (uat/frontend.yaml, prod/frontend.yaml)
+  # NOTE: Migration jobs also inherit these variables (see migration.environment section below).
+
+  # Authentication
+  NEXTAUTH_SECRET:
+  NEXTAUTH_URL:
+  AUTH_TRUST_HOST:
+
+  # Azure AD Authentication
+  AZURE_AD_CLIENT_ID:
+  AZURE_AD_CLIENT_SECRET:
+  AZURE_AD_TENANT_ID:
+
+  # Azure Storage
+  AZURE_STORAGE_ACCOUNT:
+  AZURE_STORAGE_ACCOUNT_KEY:
+  AZURE_STORAGE_CONTAINER:
+
+  # Azure Managed Identity (if using)
+  AZURE_CLIENT_ID:
+  AZURE_CLIENT_SECRET:
+  AZURE_TENANT_ID:
+
+  # AI Service API Keys
+  OPENAI_API_KEY:
+  ANTHROPIC_API_KEY:
+  GOOGLE_GENERATIVE_AI_API_KEY:
+  XAI_API_KEY:
+  TAVILY_API_KEY:
+
+  # Application Security
+  NEXT_SERVER_ACTIONS_ENCRYPTION_KEY:
+  CRON_SECRET:
+
+  # Third-party Services
+  LANDING_AI_API_KEY:
+  GMAIL_CLIENT_ID:
+  GMAIL_CLIENT_SECRET:
+
+  # Database
+  POSTGRES_URL:
+
+  # Azure Key Vault (if using)
+  KEYVAULT_URI:
+
+  # Caching
+  REDIS_URL:
+
+  # MLflow Tracking
+  MLFLOW_TRACKING_URI:
+  MLFLOW_EXPERIMENT_NAME:
+  MLFLOW_TRACKING_USERNAME:
+  MLFLOW_TRACKING_PASSWORD:
+
+  # ==============================================================================
+  # NOTE: NEXT_PUBLIC_* variables are NOT included here
+  # ==============================================================================
+  # These variables are embedded in the client bundle at BUILD TIME:
+  #   - NEXT_PUBLIC_AZURE_AD_CLIENT_ID
+  #   - NEXT_PUBLIC_ENDPOINT_HINT
+  #   - NEXT_PUBLIC_REDIRECT_URI
+  #   - NEXT_PUBLIC_AZURE_STORAGE_ACCOUNT
+  #   - NEXT_PUBLIC_ALLOWED_BLOB_HOSTNAMES
+  #
+  # They must be passed as --build-arg during docker build.
+  # Setting them here at runtime will NOT affect client-side JavaScript.
+
+liveness:
+  enabled: true
+  path: /api/health/ping
+  port: 3000
+  initialDelaySeconds: 45  # Initial delay before first check
+  periodSeconds: 10        # Check interval
+  failureThreshold: 3      # Failures before restart
+  timeoutSeconds: 5        # Timeout for health check
+readiness:
+  enabled: true            # Enable readiness checks
+  path: /api/health/ping   # Health check endpoint
+  port: 3000
+  initialDelaySeconds: 20  # Initial delay before first check
+  periodSeconds: 5         # Check interval
+  successThreshold: 1      # Successes to mark ready
+  failureThreshold: 3      # Failures to mark unready
+
+volumes:
+  enabled: false
+  pvc:
+    enabled: false
+    existing_claim:
+    name: pvc
+    mountPath: /pv
+    size: 1G
+    class:
+    accessModes:
+      - ReadWriteOnce
+
+  configMaps: {}
+
+ingress:
+  enabled: true
+  annotations:
+    nginx.org/client-max-body-size: "999M"
+    nginx.ingress.kubernetes.io/proxy-body-size: "999M"
+  hosts:
+    - host: hostname_placeholder
+      servicePort: 80
+      serviceName: service_name_placeholder
+      path: /
+    # - host: staging-assistant.holie.ai
+    #   servicePort: 80
+    #   serviceName: frontend
+    #   path: /
+  tls:
+    - hosts:
+        - hostname_placeholder
+      secretName: cloudfare-root-ca-ssl
+    # - hosts:
+    #     - staging-assistant.holie.ai
+    #   secretName: holie-cloudfare-root-ca-ssl
+
+resources: {}
+
+# RBAC configuration for init container permissions
+# Required for wait-for-migration init container to check job status and logs
+rbac: true
+createServiceAccount: true
+serviceAccount: frontend-staging-sa
+
+migration:
+  enabled: true
+  jobTimeout: 180  # Job timeout in seconds (3 minutes)
+  backoffLimit: 2  # Number of retries on failure
+  ttlSecondsAfterFinished: 60  # Cleanup completed jobs after 1 minute
+  initContainerTimeout: 30  # Init container check timeout
+  # Enable/disable database backup before migration
+  # Set to "true" to enable backup (requires Azure credentials and pg_dump)
+  # Set to "false" to skip backup and run migration only
+  enableBackup: false  # Backup disabled for staging environment
+  # ==============================================================================
+  # Migration Environment Variables
+  # ==============================================================================
+  # NOTE: The migration job ALSO inherits all variables from the main 'environment:'
+  # section above (e.g., POSTGRES_URL, REDIS_URL, etc.).
+  # Variables set here in 'migration.environment' will take PRIORITY over inherited ones.
+  #
+  # These should be set via --set flags during helm upgrade for security
+  # Required for database migration:
+  #   - POSTGRES_URL: PostgreSQL connection string (REQUIRED)
+  #     Can be inherited from main 'environment:' or set specifically here
+  # Optional for database backup (only if enableBackup=true):
+  #   - AZURE_STORAGE_ACCOUNT: Azure Storage Account name for backups
+  #   - AZURE_STORAGE_ACCOUNT_KEY: Azure Storage Account key
+  # Note: Container "database-backups" is hardcoded in backup scripts
+  # Backups are stored in: database-backups/staging/backup-TIMESTAMP.sql.gz
+  # Example helm command:
+  #   helm upgrade --install frontend-staging-test . \
+  #     --set migration.environment.POSTGRES_URL="postgresql://..." \
+  #     --set migration.enableBackup=true \
+  #     --set migration.environment.AZURE_STORAGE_ACCOUNT="..." \
+  #     --set migration.environment.AZURE_STORAGE_ACCOUNT_KEY="..."
+  environment: {}
+  resources:
+    limits:
+      cpu: 1000m  # CPU limit for migration job
+      memory: 1Gi  # Memory limit for migration job
+    requests:
+      cpu: 500m  # CPU request for migration job
+      memory: 512Mi  # Memory request for migration job

@@ -1,0 +1,8 @@
+apiVersion: v2
+name: fastapi-demo
+description: A Helm chart for FastAPI Kubernetes Demo
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: Hagi

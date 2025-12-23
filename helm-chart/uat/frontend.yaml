@@ -1,0 +1,129 @@
+global:
+  replicaCount: 1
+  environment: {}
+  enableCronjob: false
+  enableDeployment: true
+
+imagePullSecrets: acr-secret
+image:
+  repository: neurondacrhk07z6.azurecr.io/neurondsystemtest/ai_service
+  tag: microservice-frontend-2ea330
+  pullPolicy: Always
+
+proxyImage:
+  enabled: false
+
+replicaCount: 1
+
+# Rolling update configuration
+rollingUpdate:
+  maxSurge: 1          # Allow 1 extra pod during update
+  maxUnavailable: 0    # Keep all pods available during update
+progressDeadlineSeconds: 300  # Timeout after 5 minutes if not progressing
+revisionHistoryLimit: 3        # Keep 3 old ReplicaSets for rollback
+
+services:
+  - name: frontend-staging
+    type: NodePort
+    annotations: {}
+    specs:
+      - port: 80
+        targetPort: 3000
+        name: http
+
+environment: {}
+
+liveness:
+  enabled: true
+  path: /api/health/ping
+  port: 3000
+  initialDelaySeconds: 45  # Initial delay before first check
+  periodSeconds: 10        # Check interval
+  failureThreshold: 3      # Failures before restart
+  timeoutSeconds: 5        # Timeout for health check
+readiness:
+  enabled: true            # Enable readiness checks
+  path: /api/health/ping   # Health check endpoint
+  port: 3000
+  initialDelaySeconds: 20  # Initial delay before first check
+  periodSeconds: 5         # Check interval
+  successThreshold: 1      # Successes to mark ready
+  failureThreshold: 3      # Failures to mark unready
+
+volumes:
+  enabled: false
+  pvc:
+    enabled: false
+    existing_claim:
+    name: pvc
+    mountPath: /pv
+    size: 1G
+    class:
+    accessModes:
+      - ReadWriteOnce
+
+  configMaps: {}
+
+ingress:
+  enabled: true
+  annotations:
+    nginx.org/client-max-body-size: "999M"
+    nginx.ingress.kubernetes.io/proxy-body-size: "999M"
+  hosts:
+    - host: staging-assistant.neurond.com
+      servicePort: 80
+      serviceName: frontend-staging
+      path: /
+    # - host: staging-assistant.holie.ai
+    #   servicePort: 80
+    #   serviceName: frontend
+    #   path: /
+  tls:
+    - hosts:
+        - staging-assistant.neurond.com
+      secretName: cloudfare-root-ca-ssl
+    # - hosts:
+    #     - staging-assistant.holie.ai
+    #   secretName: holie-cloudfare-root-ca-ssl
+
+resources: {}
+
+# RBAC configuration for init container permissions
+# Required for wait-for-migration init container to check job status and logs
+rbac: true
+createServiceAccount: true
+serviceAccount: frontend-staging-sa
+
+migration:
+  enabled: true
+  jobTimeout: 180  # Job timeout in seconds (3 minutes)
+  backoffLimit: 2  # Number of retries on failure
+  ttlSecondsAfterFinished: 60  # Cleanup completed jobs after 1 minute
+  initContainerTimeout: 30  # Init container check timeout
+  # Enable/disable database backup before migration
+  # Set to "true" to enable backup (requires Azure credentials and pg_dump)
+  # Set to "false" to skip backup and run migration only
+  enableBackup: false  # Backup disabled for staging environment
+  # Migration environment variables
+  # These should be set via --set flags during helm upgrade for security
+  # Required for database migration:
+  #   - POSTGRES_URL: PostgreSQL connection string (REQUIRED)
+  # Optional for database backup (only if enableBackup=true):
+  #   - AZURE_STORAGE_ACCOUNT: Azure Storage Account name for backups
+  #   - AZURE_STORAGE_ACCOUNT_KEY: Azure Storage Account key
+  # Note: Container "database-backups" is hardcoded in backup scripts
+  # Backups are stored in: database-backups/staging/backup-TIMESTAMP.sql.gz
+  # Example helm command:
+  #   helm upgrade --install frontend-staging . \
+  #     --set migration.environment.POSTGRES_URL="postgresql://..." \
+  #     --set migration.enableBackup=true \
+  #     --set migration.environment.AZURE_STORAGE_ACCOUNT="..." \
+  #     --set migration.environment.AZURE_STORAGE_ACCOUNT_KEY="..."
+  environment: {}
+  resources:
+    limits:
+      cpu: 1000m  # CPU limit for migration job
+      memory: 1Gi  # Memory limit for migration job
+    requests:
+      cpu: 500m  # CPU request for migration job
+      memory: 512Mi  # Memory request for migration job

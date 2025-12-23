@@ -1,0 +1,13 @@
+---
+apiVersion: v2
+name: MODULE_NAME
+version: 0.1.0
+appVersion: 0.1.0
+description: A Helm chart which provide a assistant service deployment for Atlas
+keywords:
+  - service
+  - template
+  - assistant
+  - generic
+maintainers:
+  - name: Tuan Ton

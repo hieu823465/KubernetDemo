@@ -1,0 +1,57 @@
+# Default values for fastapi-demo
+# This is a YAML-formatted file.
+
+replicaCount: 3
+
+image:
+  repository: fastapi-demo
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Environment name (development, staging, production)
+environment: kubernetes
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+# NodePort service (optional, for direct access)
+nodePort:
+  enabled: true
+  port: 30080
+
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "100m"
+  limits:
+    memory: "128Mi"
+    cpu: "250m"
+
+# Health check configuration
+probes:
+  liveness:
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    path: /ready
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# Pod annotations (optional)
+podAnnotations: {}
+
+# Node selector (optional)
+nodeSelector: {}
+
+# Tolerations (optional)
+tolerations: []
+
+# Affinity rules (optional)
+affinity: {}
