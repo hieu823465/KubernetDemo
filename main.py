@@ -73,6 +73,16 @@ async def info():
     }
 
 
+@app.get("/echo/{message}")
+async def echo(message: str):
+    """Echo back the message provided in the path."""
+    return {
+        "message": message,
+        "processed_at": datetime.utcnow().isoformat(),
+        "pod_name": os.getenv("POD_NAME", "unknown")
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

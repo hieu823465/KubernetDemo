@@ -75,3 +75,17 @@ async def test_openapi_docs():
     data = response.json()
     assert "info" in data
     assert data["info"]["title"] == "K8s Demo API"
+
+
+@pytest.mark.anyio
+async def test_echo_endpoint():
+    """Test the echo endpoint returns the input message."""
+    test_message = "hello-world"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/echo/{test_message}")
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert data["message"] == test_message
+    assert "processed_at" in data
+    assert "pod_name" in data
